@@ -1,21 +1,62 @@
-# Run <TOOL> via pre-commit + reviewdog
+# Run shellcheck via pre-commit + reviewdog
 
-> Template README — replace `<TOOL>` and `<HOOK_ID>` with your actual tool and pre-commit hook name.
+This GitHub Action runs `shellcheck` via [`pre-commit`](https://pre-commit.com/) on a ref range and reports:
 
-This GitHub Action runs a single [`pre-commit`](https://pre-commit.com/) hook on a diff range and reports results to pull requests
+- **Diagnostics** (JSON-based) as inline comments
+- **Suggested fixes** as a diff review
+
 using [reviewdog](https://github.com/reviewdog/reviewdog).
 
-Typical use case:
+It combines:
 
-- Run the `<HOOK_ID>` pre-commit hook (e.g. `actionlint-oneline`)
-- Annotate problems directly on the PR diff
-- Fail the job if violations are found
+- `shellcheck-json-output` (JSON output; diagnostics)
+- `shellcheck-diff-output` (diff output; suggestions)
 
 ## Requirements
 
-- A `.pre-commit-config.yaml` in your repository with the `<HOOK_ID>` hook enabled
+Add the shellcheck hooks to your `.pre-commit-config.yaml` (using a local repo), for example:
+
+```yaml
+repos:
+  - repo: local
+    hooks:
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        types: [shell]
+        args: ["-x"]
+      - id: shellcheck
+        alias: shellcheck-diff-output
+        name: shellcheck (diff output)
+        entry: shellcheck
+        language: system
+        types: [shell]
+        args: ["-f", "diff", "-x"]
+        stages: [manual]
+      - id: shellcheck
+        alias: shellcheck-json-output
+        name: shellcheck (json output)
+        entry: shellcheck
+        language: system
+        types: [shell]
+        args: ["-f", "json", "-x"]
+        stages: [manual]
+````
+
+You also need:
+
 - GitHub Actions enabled on the repository
 - `secrets.GITHUB_TOKEN` available (default on GitHub-hosted runners)
+- A runner where `shellcheck` is available
+  – on `ubuntu-latest`, this action installs `shellcheck` and `jq` via `apt`
+- `actions/checkout` fetching enough history to include both `from-ref` and `to-ref`, for example:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+```
 
 ## Inputs
 
@@ -27,45 +68,55 @@ Typical use case:
 
 ## Outputs
 
-| Name       | Description                                  |
-|------------|----------------------------------------------|
-| `exitcode` | Exit code of the `<HOOK_ID>` pre-commit hook |
+| Name       | Description                                    |
+|------------|------------------------------------------------|
+| `exitcode` | Exit code of the `shellcheck-json-output` hook |
 
 ## Usage
 
-In your workflow (example for a pull request):
+Example workflow for pull requests:
 
 ```yaml
-name: Lint with <TOOL>
+name: Lint shell scripts with shellcheck
 
 on:
   pull_request:
 
 jobs:
-  lint:
+  shellcheck:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Run <TOOL> via pre-commit + reviewdog
-        uses: <OWNER>/<REPO>@v1
+      - name: Run shellcheck via pre-commit + reviewdog
+        uses: leinardi/gha-pre-commit-shellcheck-reviewdog@v1
         with:
           from-ref: ${{ github.event.pull_request.base.sha }}
           to-ref: ${{ github.event.pull_request.head.sha }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-````
+```
+
+This will:
+
+1. Run `shellcheck-json-output` on shell files changed between `from-ref` and `to-ref` and report diagnostics with links to the corresponding
+   ShellCheck wiki pages.
+2. Run `shellcheck-diff-output` to generate a diff of suggested fixes and post it as a review (`shellcheck (suggestion)`).
+3. Fail the job if issues are found.
 
 ## Versioning
 
 It’s recommended to pin to the major version:
 
 ```yaml
-uses: <OWNER>/<REPO>@v1
+uses: leinardi/gha-pre-commit-shellcheck-reviewdog@v1
 ```
 
 For fully reproducible behavior, pin to an exact tag:
 
 ```yaml
-uses: <OWNER>/<REPO>@v1.0.0
+uses: leinardi/gha-pre-commit-shellcheck-reviewdog@v1.0.0
 ```

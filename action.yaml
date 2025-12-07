@@ -1,6 +1,5 @@
-# Replace `<OWNER>/<REPO>` with this action’s repository, and `<TOOL>` / `<HOOK_ID>` with the actual tool and hook name for the concrete action.
-name: "Run <TOOL> via pre-commit + reviewdog"
-description: "Runs <HOOK_ID> pre-commit hook on a diff range and reports via reviewdog"
+name: "Run shellcheck via pre-commit + reviewdog"
+description: "Runs shellcheck-json-output via pre-commit on a ref range and reports diagnostics and suggestions via reviewdog"
 author: "leinardi"
 branding:
   icon: "check-circle"
@@ -19,8 +18,8 @@ inputs:
 
 outputs:
   exitcode:
-    description: "Exit code of the <HOOK_ID> pre-commit hook"
-    value: ${{ steps.run_hook.outputs.exitcode }}
+    description: "Exit code of the shellcheck-json-output pre-commit hook"
+    value: ${{ steps.sc_lint.outputs.exitcode }}
 
 runs:
   using: "composite"
@@ -30,6 +29,13 @@ runs:
       with:
         path: ~/.cache/pre-commit
         key: pre-commit|${{ runner.os }}|${{ hashFiles('.pre-commit-config.yaml') }}
+
+    - name: Install shellcheck and jq
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y shellcheck jq
 
     - name: Install Python deps + pre-commit
       shell: bash
@@ -42,44 +48,61 @@ runs:
       with:
         reviewdog_version: latest
 
-    # TODO: customize this step for your specific hook and parsing logic
-    - name: Run <HOOK_ID> pre-commit hook
-      id: run_hook
+    - name: Run shellcheck (JSON output)
+      id: sc_lint
       shell: bash
       run: |
         set +e
         set -o pipefail
 
-        # Run the specific pre-commit hook on the diff range
-        pre-commit run <HOOK_ID> \
+        pre-commit run shellcheck-json-output \
           --hook-stage manual \
           --from-ref "${{ inputs.from-ref }}" \
           --to-ref   "${{ inputs.to-ref }}" \
           --color=never \
-          | tee hook-output.txt
+          | tee >(grep -Ev '^\[INFO\]' | tail -n +5 > shellcheck.json)
 
         exitcode=${PIPESTATUS[0]}
         echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
+
         # Do not fail here; let reviewdog decide
         exit 0
 
-    - name: Report findings via reviewdog
-      if: steps.run_hook.outputs.exitcode != '0'
+    - name: Report shellcheck suggestions via reviewdog (diff)
+      if: steps.sc_lint.outputs.exitcode != '0'
+      env:
+        REVIEWDOG_GITHUB_API_TOKEN: ${{ inputs.github-token }}
+      continue-on-error: true
+      shell: bash
+      run: |
+        pre-commit run shellcheck-diff-output \
+          --hook-stage manual \
+          --from-ref "${{ inputs.from-ref }}" \
+          --to-ref   "${{ inputs.to-ref }}" \
+          --color=never \
+          | grep -Ev '^\[INFO\]' \
+          | tail -n +5 \
+          | reviewdog \
+              -name="shellcheck (suggestion)" \
+              -f=diff \
+              -f.diff.strip=1 \
+              -reporter=github-pr-review \
+              -filter-mode=nofilter \
+              -fail-level=error
+
+    - name: Report shellcheck diagnostics via reviewdog
+      if: steps.sc_lint.outputs.exitcode != '0'
       env:
         REVIEWDOG_GITHUB_API_TOKEN: ${{ inputs.github-token }}
       shell: bash
       run: |
-        # TODO: adapt this part to match your tool's output format and efm
-        # For example, you might need to transform hook-output.txt lines
-        # into reviewdog's %t:%f:%l:%c:%m format.
-
-        cat hook-output.txt \
+        jq -r '.[] | "\(.file):\(.line):\(.column):\(.level):\(.message) [SC\(.code)](https://github.com/koalaman/shellcheck/wiki/SC\(.code))"' shellcheck.json \
           | reviewdog \
-              -efm="%f:%l:%c: %m" \
-              -name="<TOOL>" \
+              -efm="%f:%l:%c:%t%*[^:]:%m" \
+              -name="shellcheck" \
               -reporter=github-pr-review \
               -filter-mode=nofilter \
-              -fail-level=info
+              -fail-level=error
 
         # Fail the job if there were violations
         exit 1
